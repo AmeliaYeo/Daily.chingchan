@@ -127,55 +127,106 @@ fileInput.addEventListener('change', async (e) => {
 
 /* 이미지 분석 함수 */
 async function analyzeImage(imgEl) {
-  // draw scaled down on canvas
+  // 1) 간단히 캔버스에 그리기
   const canvas = document.createElement('canvas');
-  const max = 200; // small for speed
+  const max = 220;
   const ratio = Math.min(max / imgEl.naturalWidth, max / imgEl.naturalHeight, 1);
-  canvas.width = Math.max(1, Math.floor(imgEl.naturalWidth * ratio));
-  canvas.height = Math.max(1, Math.floor(imgEl.naturalHeight * ratio));
+  canvas.width = Math.floor(imgEl.naturalWidth * ratio);
+  canvas.height = Math.floor(imgEl.naturalHeight * ratio);
   const ctx = canvas.getContext('2d');
   ctx.drawImage(imgEl, 0, 0, canvas.width, canvas.height);
-  const data = ctx.getImageData(0,0,canvas.width,canvas.height).data;
 
-  let total = 0, greenCount = 0, skinCount = 0, brightSum = 0, edgeScore = 0;
-  // quick edge detection: simple laplacian-ish using neighbor differences
-  function idx(x,y){ return (y*canvas.width + x) * 4; }
-  for (let y=0; y<canvas.height; y++){
-    for (let x=0; x<canvas.width; x++){
-      const i = idx(x,y);
+  const { width, height } = canvas;
+  const data = ctx.getImageData(0, 0, width, height).data;
+
+  let warmCount = 0;
+  let coolCount = 0;
+  let brightSum = 0;
+  let skinCandidate = 0;
+  let edgeScore = 0;
+  
+  let total = width * height;
+
+  const idx = (x, y) => (y * width + x) * 4;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = idx(x, y);
       const r = data[i], g = data[i+1], b = data[i+2];
-      total++;
-      // green-ish pixel
-      if (g > 1.2 * r && g > 1.1 * b && g > 70) greenCount++;
-      // brightness
-      const bright = (0.299*r + 0.587*g + 0.114*b);
-      brightSum += bright;
-      // simple skin tone detection (YCrCb-like heuristic)
-      const maxRGB = Math.max(r,g,b), minRGB = Math.min(r,g,b);
-      if (r > 95 && g > 40 && b > 20 && (maxRGB - minRGB) > 15 && (r - g) > 15 && r > b) skinCount++;
-      // micro-edge: compare to right neighbor
-      if (x < canvas.width - 1) {
-        const j = idx(x+1,y);
-        const dr = Math.abs(r - data[j]);
-        const dg = Math.abs(g - data[j+1]);
-        const db = Math.abs(b - data[j+2]);
-        if (dr+dg+db > 60) edgeScore++;
+
+      const brightness = (0.299*r + 0.587*g + 0.114*b);
+      brightSum += brightness;
+
+      // 따뜻한 색 비율 체크
+      if (r > g + 20 && r > b + 20) warmCount++;
+      // 차가운 색 비율 체크
+      if (b > r + 15 || g > r + 15) coolCount++;
+
+      // 피부 후보(단, 조명/배경 제외를 위해 2단계에서 재확인)
+      if (r > 80 && g > 40 && b < r && r - g < 80 && r - b < 120) {
+        skinCandidate++;
+      }
+
+      // 에지(윤곽선) 체크 → 사람 얼굴 윤곽은 특정 패턴을 보여줌
+      if (x < width - 1) {
+        const j = idx(x+1, y);
+        const diff = Math.abs(r - data[j]) + Math.abs(g - data[j+1]) + Math.abs(b - data[j+2]);
+        if (diff > 65) edgeScore++;
       }
     }
   }
 
-  const greenRatio = greenCount / total;
-  const skinRatio = skinCount / total;
-  const avgBright = brightSum / total;
-  const edgeRatio = edgeScore / total;
+  const warmRatio = warmCount / total;     // 따뜻한 색 비율
+  const coolRatio = coolCount / total;     // 차가운 색 비율
+  const avgBrightness = brightSum / total; // 평균 밝기
+  const skinRatio = skinCandidate / total; // 피부 후보 비율
+  const edgeRatio = edgeScore / total;     // 윤곽선 강도
 
-  // heuristics
-  if (skinRatio > 0.02) return 'people';
-  if (greenRatio > 0.06 && avgBright > 50) return 'outdoor';
-  if (edgeRatio > 0.05 && avgBright < 120) return 'objects';
-  if (avgBright < 100) return 'indoor';
-  return 'default';
+  /* ---------------------------------------------------------
+     1단계: 색 기반 초벌 분류
+     --------------------------------------------------------- */
+
+  let colorClass = "neutral";
+
+  // 매우 따뜻한 색(황토색/붉은조명/노을류)
+  if (warmRatio > 0.32) colorClass = "warm-heavy";
+
+  // 초록/파랑 비율이 많으면 야외 가능성 ↑
+  if (coolRatio > 0.28) colorClass = "cool-heavy";
+
+  /* ---------------------------------------------------------
+     2단계: 정밀 판단
+     --------------------------------------------------------- */
+
+  // (A) 사람 판단
+  // 피부 후보가 있고, 윤곽선이 너무 강하지 않으며,
+  // 조명이 "따뜻한 색이라고 해서"만 피부로 오인하는 것을 방지
+  const looksLikePerson =
+    skinRatio > 0.015 &&          // 최소 피부 비율
+    skinRatio < 0.20 &&           // 전체가 피부색이면 조명일 가능성 ↑
+    edgeRatio > 0.020 &&          // 얼굴 윤곽선/머리카락 텍스처 가능성
+    !(colorClass === "warm-heavy" && skinRatio < 0.04); // 조명 때문에 따뜻한 색일 뿐인 경우 제외
+
+  if (looksLikePerson) return "people";
+
+  // (B) 야외
+  // 초록·파랑 비율 또는 밝기/텍스처 기반
+  if (colorClass === "cool-heavy" || (coolRatio > 0.18 && avgBrightness > 80)) {
+    return "outdoor";
+  }
+
+  // (C) 실내(따뜻한 조명)
+  if (colorClass === "warm-heavy" && avgBrightness < 160) {
+    return "indoor";
+  }
+
+  // (D) 사물
+  if (edgeRatio > 0.05) return "objects";
+
+  // 기본값
+  return "default";
 }
+
 
 /* 칭찬 풀 (카테고리별) */
 const compliments = {
