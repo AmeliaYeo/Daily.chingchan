@@ -126,7 +126,7 @@ fileInput.addEventListener('change', async (e) => {
 });
 
 /* 이미지 분석 함수 */
-      async function analyzeImage(imgEl) {
+async function analyzeImage(imgEl) {
   const canvas = document.createElement('canvas');
   const max = 260;
   const ratio = Math.min(max / imgEl.naturalWidth, max / imgEl.naturalHeight, 1);
@@ -139,7 +139,6 @@ fileInput.addEventListener('change', async (e) => {
   const { data } = ctx.getImageData(0, 0, width, height);
   const total = width * height;
 
-  // 기본 특징
   let warm = 0, cool = 0, brightnessSum = 0;
   let edgeCount = 0, uniformAreas = 0;
 
@@ -149,22 +148,19 @@ fileInput.addEventListener('change', async (e) => {
   let shoulderPattern = 0;
 
   // 자연 특징
-  let greenish = 0;
-  let bluish = 0;
-  let brownish = 0;
+  let greenish = 0, bluish = 0, brownish = 0;
 
   const idx = (x, y) => (y * width + x) * 4;
 
   for (let y = 1; y < height - 1; y++) {
     for (let x = 1; x < width - 1; x++) {
-
       const i = idx(x, y);
       const r = data[i], g = data[i+1], b = data[i+2];
       const lum = (r + g + b) / 3;
 
       brightnessSum += lum;
 
-      // 색 비율
+      // 색 기반
       if (r > g + 12 && r > b + 12) warm++;
       if (b > r + 12 || g > r + 12) cool++;
 
@@ -173,43 +169,42 @@ fileInput.addEventListener('change', async (e) => {
       if (b > r + 10 && b > g + 10) bluish++;
       if (r > 85 && g > 50 && b < 80) brownish++;
 
-      // 에지 강도
-      const right = idx(x+1, y);
+      // 윤곽선
       const diff =
-        Math.abs(r - data[right]) +
-        Math.abs(g - data[right+1]) +
-        Math.abs(b - data[right+2]);
-      if (diff > 50) edgeCount++;
+        Math.abs(r - data[idx(x+1, y)]) +
+        Math.abs(g - data[idx(x+1, y)+1]) +
+        Math.abs(b - data[idx(x+1, y)+2]);
+      if (diff > 55) edgeCount++;
 
-      // 단색 벽/천장
-      const up = idx(x, y-1);
+      // 단색 영역
       const diffUp =
-        Math.abs(r - data[up]) +
-        Math.abs(g - data[up+1]) +
-        Math.abs(b - data[up+2]);
+        Math.abs(r - data[idx(x, y-1)]) +
+        Math.abs(g - data[idx(x, y-1)+1]) +
+        Math.abs(b - data[idx(x, y-1)+2]);
       if (diffUp < 20) uniformAreas++;
 
       // ----------------------
-      // 사람 판단용
+      // 사람 후보 특징
       // ----------------------
-      if (lum < 75) hairDark++;                // 더 완화
-      if (lum > 70 && lum < 185 && diffUp < 50) torsoMid++;
-      
-      const left = idx(x-1, y);
+      if (lum < 70) hairDark++;
+
+      if (lum > 70 && lum < 180 && diffUp < 45) torsoMid++;
+
       const leftDiff =
-        Math.abs(r - data[left]) +
-        Math.abs(g - data[left+1]) +
-        Math.abs(b - data[left+2]);
-      if (leftDiff > 10 && diffUp > 8 && diff < 160) {
+        Math.abs(r - data[idx(x-1, y)]) +
+        Math.abs(g - data[idx(x-1, y)+1]) +
+        Math.abs(b - data[idx(x-1, y)+2]);
+      if (leftDiff > 12 && diffUp > 10 && diff < 150) {
         shoulderPattern++;
       }
     }
   }
 
-  // 비율 계산
+  // 비율
   const warmRatio = warm / total;
   const coolRatio = cool / total;
   const brightness = brightnessSum / total;
+
   const edgeRatio = edgeCount / total;
   const uniformRatio = uniformAreas / total;
 
@@ -222,53 +217,53 @@ fileInput.addEventListener('change', async (e) => {
   const shoulderRatio = shoulderPattern / total;
 
   /* ------------------------------------------------------
-     1) 사람 인식 *가장 먼저*
+     📌 1) 사람 인식 (2단계: 후보 → 검증)
      ------------------------------------------------------ */
 
-  const personBack =
-    hairRatio > 0.004 &&
-    torsoRatio > 0.025 &&
-    shoulderRatio > 0.008 &&
-    edgeRatio > 0.010;
+  // 1단계: 사람일 가능성 있는 최소 조건
+  const personCandidate =
+    (hairRatio > 0.004 && torsoRatio > 0.016) ||
+    (torsoRatio > 0.020 && shoulderRatio > 0.007);
 
-  const personGeneral =
-    hairRatio > 0.010 &&
-    torsoRatio > 0.018 &&
-    edgeRatio > 0.010;
+  if (personCandidate) {
 
-  // 사람은 최우선으로 인식
-  if (personBack || personGeneral) {
-    return "people";
+    // 2단계: 검증 단계 (오탐 엄청 줄어드는 핵심)
+    const personVerified =
+      (hairRatio + torsoRatio + shoulderRatio) > 0.040 && // 특징 합
+      edgeRatio > 0.012 &&                                // 윤곽선 최소
+      brightness > 70 && brightness < 220 &&              // 너무 어둡거나 너무 밝으면 X
+      uniformRatio < 0.32;                                // 배경이 너무 단색이면 사람 아님
+
+    if (personVerified) {
+      return "people";
+    }
   }
 
   /* ------------------------------------------------------
-     2) 사람 없으면 → 실내 여부
+     2) 실내
      ------------------------------------------------------ */
-
   const indoor =
-    warmRatio > 0.20 ||
-    uniformRatio > 0.20 ||
-    (brightness < 140 && edgeRatio < 0.05);
+    warmRatio > 0.22 ||
+    (uniformRatio > 0.20 && edgeRatio < 0.05) ||
+    (brightness < 135);
 
   if (indoor) return "indoor";
 
   /* ------------------------------------------------------
      3) 자연
      ------------------------------------------------------ */
-
   const nature =
-    (greenRatio + blueRatio + brownRatio) > 0.22 &&
+    (greenRatio + blueRatio + brownRatio) > 0.24 &&
     edgeRatio > 0.010 &&
     brightness > 95;
 
   if (nature) return "outdoor";
 
   /* ------------------------------------------------------
-     4) 나머지는 사물
+     4) 사물
      ------------------------------------------------------ */
-
   return "objects";
-      }
+    }
   
 /* 칭찬 풀 (카테고리별) */
 const compliments = {
