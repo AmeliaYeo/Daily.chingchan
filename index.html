@@ -175,11 +175,11 @@ async function analyzeImage(imgEl) {
 
       // 에지
       const right = idx(x+1, y);
-      const diff = 
+      const diff =
         Math.abs(r - data[right]) +
         Math.abs(g - data[right+1]) +
         Math.abs(b - data[right+2]);
-      if (diff > 60) edgeCount++;
+      if (diff > 55) edgeCount++;
 
       // 단색 구역
       const up = idx(x, y-1);
@@ -187,13 +187,13 @@ async function analyzeImage(imgEl) {
         Math.abs(r - data[up]) +
         Math.abs(g - data[up+1]) +
         Math.abs(b - data[up+2]);
-      if (diffUp < 25) uniformAreas++;
+      if (diffUp < 23) uniformAreas++;
 
       // ----------------------
-      // 사람 뒷모습 탐지
+      // 사람 뒷모습 & 일반 사람
       // ----------------------
-      if (lum < 55) hairDark++; // 머리카락 후보
-      if (lum > 60 && lum < 160 && diffUp < 40) torsoMid++; // 몸통 후보
+      if (lum < 65) hairDark++; // 머리 후보 완화
+      if (lum > 55 && lum < 175 && diffUp < 45) torsoMid++; // 몸통 완화
 
       const left = idx(x-1, y);
       const leftDiff =
@@ -201,8 +201,8 @@ async function analyzeImage(imgEl) {
         Math.abs(g - data[left+1]) +
         Math.abs(b - data[left+2]);
 
-      if (diffUp > 15 && leftDiff > 15 && diff < 120) {
-        shoulderPattern++; // 어깨 라인 느낌
+      if (diffUp > 10 && leftDiff > 10 && diff < 150) {
+        shoulderPattern++; // 어깨 기준 완화
       }
     }
   }
@@ -224,63 +224,63 @@ async function analyzeImage(imgEl) {
   const shoulderRatio = shoulderPattern / total;
 
   /* -----------------------------------------------------
-       1) 1차 분류 : 자연 / 실내 / 사물 (사람 제외)
+       1) 자연 / 실내 / 사물 기본 분류
      ----------------------------------------------------- */
 
-  // 자연 판단
+  // 자연 판단 (조금 더 완화, 단 파란+초록 비율이 높으면 사람 X)
   const natureStrong =
-    (greenRatio + blueRatio + brownRatio > 0.28) &&
-    edgeRatio > 0.012 &&
-    brightness > 105;
+    (greenRatio + blueRatio + brownRatio > 0.25) &&
+    edgeRatio > 0.010 &&
+    brightness > 100;
 
-  // 실내 판단
+  // 실내 판단 개선
   const indoorStrong =
-    warmRatio > 0.22 ||
-    uniformRatio > 0.23 ||
-    (brightness < 130 && edgeRatio < 0.05);
+    warmRatio > 0.18 ||
+    uniformRatio > 0.21 ||
+    (brightness < 140 && edgeRatio < 0.06);
 
   // 사물 판단
   const objectLikely =
-    uniformRatio > 0.32 ||
-    edgeRatio < 0.025 ||
-    brightness < 95;
+    uniformRatio > 0.30 ||
+    edgeRatio < 0.022 ||
+    brightness < 90;
 
-  // 1차 결과 저장
   let baseCategory = "objects";
-
   if (natureStrong) baseCategory = "outdoor";
   else if (indoorStrong && !objectLikely) baseCategory = "indoor";
   else baseCategory = "objects";
 
   /* -----------------------------------------------------
-       2) 마지막 단계: 사람 인식 (엄격)
+       2) 사람 인식 (덜 엄격하게)
      ----------------------------------------------------- */
 
-  // 뒷모습 강화된 조건
   const looksLikeBack =
-    hairRatio > 0.009 &&
-    torsoRatio > 0.040 &&
-    shoulderRatio > 0.013 &&
-    edgeRatio > 0.018 &&
-    brightness > 60;
+    hairRatio > 0.006 &&   // 기존보다 완화
+    torsoRatio > 0.030 &&  // 완화
+    shoulderRatio > 0.010 && 
+    edgeRatio > 0.015 &&
+    brightness > 55;
 
-  // 일반적인 사람
   const generalPerson =
-    hairRatio > 0.018 &&
-    torsoRatio > 0.028 &&
-    edgeRatio > 0.015;
-
-  // 자연·실내가 강한 경우: 사람 오탐 방지 필터
-  const hardBlockPerson =
-    natureStrong || (indoorStrong && uniformRatio > 0.33);
-
-  if ((looksLikeBack || generalPerson) && !hardBlockPerson) {
-    return "people";
-  }
+    hairRatio > 0.012 &&
+    torsoRatio > 0.020 &&
+    edgeRatio > 0.012;
 
   /* -----------------------------------------------------
-       3) 최종 반환
+       3) 사람 오탐 방지 (자연·실내에서 잘못 잡던 문제 해결)
      ----------------------------------------------------- */
+
+  const strongNatureBlock =
+    (greenRatio + blueRatio) > 0.33 && edgeRatio < 0.018;
+
+  const strongIndoorBlock =
+    warmRatio > 0.30 && uniformRatio > 0.28;
+
+  if ((looksLikeBack || generalPerson) &&
+      !strongNatureBlock &&
+      !strongIndoorBlock) {
+    return "people";
+  }
 
   return baseCategory;
 }
