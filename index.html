@@ -220,24 +220,40 @@ async function analyzeImage(imgEl) {
      📌 1) 사람 인식 (2단계: 후보 → 검증)
      ------------------------------------------------------ */
 
-  // 1단계: 사람일 가능성 있는 최소 조건
-  const personCandidate =
-    (hairRatio > 0.004 && torsoRatio > 0.016) ||
-    (torsoRatio > 0.020 && shoulderRatio > 0.007);
+  const strongHair = hairRatio > 0.015;        // 어두운 면적이 꽤 많아야 함
+const strongTorso = torsoRatio > 0.045;      // 몸통 중간톤 영역 크게 필요
+const strongShoulder = shoulderRatio > 0.020; // 어깨 라인 패턴 꽤 뚜렷해야
 
-  if (personCandidate) {
+// 세 조건 모두 충족해야 “사람 가능성”
+const consistentHumanShape =
+  strongHair &&
+  strongTorso &&
+  strongShoulder &&
+  edgeRatio > 0.020;
 
-    // 2단계: 검증 단계 (오탐 엄청 줄어드는 핵심)
-    const personVerified =
-      (hairRatio + torsoRatio + shoulderRatio) > 0.040 && // 특징 합
-      edgeRatio > 0.012 &&                                // 윤곽선 최소
-      brightness > 70 && brightness < 220 &&              // 너무 어둡거나 너무 밝으면 X
-      uniformRatio < 0.32;                                // 배경이 너무 단색이면 사람 아님
+// 자연/실내일 때는 사람 판단을 두 배로 강화
+const hardEnv =
+  natureStrong ||
+  indoorStrong ||
+  uniformRatio > 0.28 ||
+  brightness > 150;   // 밝은 실내는 오히려 인물 실루엣이 더 잘 보임 → 오탐 제거
 
-    if (personVerified) {
-      return "people";
+let isHuman = false;
+
+if (consistentHumanShape) {
+  if (hardEnv) {
+    // 자연/실내에서는 더 강한 조건
+    if (hairRatio > 0.020 && torsoRatio > 0.055 && shoulderRatio > 0.024) {
+      isHuman = true;
     }
+  } else {
+    isHuman = true;
   }
+}
+
+if (isHuman) return "people";
+
+
 
   /* ------------------------------------------------------
      2) 실내
